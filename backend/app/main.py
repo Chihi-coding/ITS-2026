@@ -5,6 +5,8 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.routes.alerts import router as alerts_router
+from app.routes.camera import router as camera_router
 from app.routes.violations import router as violations_router
 
 logging.basicConfig(
@@ -24,6 +26,8 @@ app.add_middleware(
 )
 
 app.include_router(violations_router)
+app.include_router(camera_router)
+app.include_router(alerts_router)
 
 
 @app.get("/health")

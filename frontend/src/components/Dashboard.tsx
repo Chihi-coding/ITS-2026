@@ -7,10 +7,14 @@ import {
   ImageIcon,
   X,
   AlertTriangle,
+  Send,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useViolations } from "../hooks/useViolations";
 import type { Violation } from "../types/violation";
+import CCTVMonitor from "./CCTVMonitor";
 
 /* ── Helpers ───────────────────────────────────────────────── */
 
@@ -18,9 +22,14 @@ function formatTimestamp(raw: string | null | undefined): string {
   if (!raw) return "—";
   try {
     return new Intl.DateTimeFormat("en-GB", {
-      dateStyle: "medium",
-      timeStyle: "short",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
       hour12: false,
+      timeZone: "Asia/Ho_Chi_Minh",
     }).format(new Date(raw));
   } catch {
     return raw;
@@ -33,22 +42,90 @@ function statusBadge(status: string) {
     return "bg-emerald-500/15 text-emerald-400 ring-emerald-500/30";
   if (s === "reviewed")
     return "bg-sky-500/15 text-sky-400 ring-sky-500/30";
-  return "bg-amber-500/15 text-amber-400 ring-amber-500/30"; // Pending
+  return "bg-amber-500/15 text-amber-400 ring-amber-500/30";
 }
 
 function bestTimestamp(v: Violation): string {
   return formatTimestamp(v.detected_at ?? v.violation_started_at);
 }
 
+/* ── Toast System ──────────────────────────────────────────── */
+
+type ToastKind = "success" | "error";
+
+interface Toast {
+  id: number;
+  message: string;
+  kind: ToastKind;
+}
+
+let _toastId = 0;
+
+function ToastContainer({ toasts, dismiss }: { toasts: Toast[]; dismiss: (id: number) => void }) {
+  return (
+    <div className="fixed bottom-6 right-6 z-[60] flex flex-col gap-2 pointer-events-none">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={`pointer-events-auto flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium shadow-2xl backdrop-blur-sm ring-1 animate-slide-in ${
+            t.kind === "success"
+              ? "bg-emerald-950/90 text-emerald-300 ring-emerald-500/30"
+              : "bg-red-950/90 text-red-300 ring-red-500/30"
+          }`}
+        >
+          {t.kind === "success" ? (
+            <CheckCircle2 size={16} className="shrink-0 text-emerald-400" />
+          ) : (
+            <XCircle size={16} className="shrink-0 text-red-400" />
+          )}
+          {t.message}
+          <button
+            onClick={() => dismiss(t.id)}
+            className="ml-2 opacity-60 hover:opacity-100 transition"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function useToast() {
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const timers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+
+  const dismiss = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+    const timer = timers.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      timers.current.delete(id);
+    }
+  }, []);
+
+  const addToast = useCallback(
+    (message: string, kind: ToastKind, duration = 4000) => {
+      const id = ++_toastId;
+      setToasts((prev) => [...prev, { id, message, kind }]);
+      const timer = setTimeout(() => dismiss(id), duration);
+      timers.current.set(id, timer);
+    },
+    [dismiss]
+  );
+
+  // Cleanup on unmount
+  useEffect(() => {
+    const t = timers.current;
+    return () => t.forEach((timer) => clearTimeout(timer));
+  }, []);
+
+  return { toasts, addToast, dismiss };
+}
+
 /* ── Lightbox ──────────────────────────────────────────────── */
 
-function Lightbox({
-  src,
-  onClose,
-}: {
-  src: string;
-  onClose: () => void;
-}) {
+function Lightbox({ src, onClose }: { src: string; onClose: () => void }) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fade-in"
@@ -75,7 +152,7 @@ function Lightbox({
 function StatsBar({ violations }: { violations: Violation[] }) {
   const total = violations.length;
   const pending = violations.filter(
-    (v) => v.status?.toLowerCase() === "pending",
+    (v) => v.status?.toLowerCase() === "pending"
   ).length;
   const today = violations.filter((v) => {
     const ts = v.detected_at ?? v.violation_started_at;
@@ -131,12 +208,75 @@ function StatsBar({ violations }: { violations: Violation[] }) {
   );
 }
 
+/* ── Send Alert Button ─────────────────────────────────────── */
+
+function SendAlertButton({
+  violation,
+  onSuccess,
+  onError,
+}: {
+  violation: Violation;
+  onSuccess: (msg: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [sent, setSent] = useState(violation.telegram_sent === true);
+
+  const handleSend = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/alerts/telegram/${violation.id}`, {
+        method: "POST",
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+
+      setSent(true);
+      onSuccess(`Alert sent to Telegram for plate ${violation.license_plate}!`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      onError(`Failed to send alert: ${msg}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (sent) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-400 ring-1 ring-inset ring-emerald-500/25">
+        <CheckCircle2 size={12} />
+        Sent
+      </span>
+    );
+  }
+
+  return (
+    <button
+      onClick={handleSend}
+      disabled={loading}
+      title="Send Telegram Alert"
+      className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600/15 px-2.5 py-1.5 text-xs font-medium text-sky-400 ring-1 ring-inset ring-sky-500/25 transition hover:bg-sky-600/30 hover:text-sky-300 disabled:pointer-events-none disabled:opacity-50"
+    >
+      {loading ? (
+        <RefreshCw size={12} className="animate-spin" />
+      ) : (
+        <Send size={12} />
+      )}
+      {loading ? "Sending…" : "Alert"}
+    </button>
+  );
+}
+
 /* ── Main Dashboard ────────────────────────────────────────── */
 
 export default function Dashboard() {
   const { violations, loading, error, realtimeConnected, refetch } =
     useViolations();
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const { toasts, addToast, dismiss } = useToast();
 
   return (
     <div className="min-h-screen bg-gray-950">
@@ -192,6 +332,9 @@ export default function Dashboard() {
       <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6">
         <StatsBar violations={violations} />
 
+        {/* CCTV Monitor with ROI drawing */}
+        <CCTVMonitor />
+
         {/* Error banner */}
         {error && (
           <div className="rounded-lg border border-red-800 bg-red-900/30 px-4 py-3 text-sm text-red-300">
@@ -234,6 +377,7 @@ export default function Dashboard() {
                     <th className="px-5 py-3">Detected At</th>
                     <th className="px-5 py-3">Duration</th>
                     <th className="px-5 py-3">Status</th>
+                    <th className="px-5 py-3">Alert</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-800/60">
@@ -273,10 +417,7 @@ export default function Dashboard() {
                               className="h-10 w-16 object-cover transition group-hover:scale-110"
                             />
                             <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition group-hover:opacity-100">
-                              <ImageIcon
-                                size={14}
-                                className="text-white"
-                              />
+                              <ImageIcon size={14} className="text-white" />
                             </div>
                           </button>
                         ) : (
@@ -303,11 +444,20 @@ export default function Dashboard() {
                       <td className="whitespace-nowrap px-5 py-3">
                         <span
                           className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${statusBadge(
-                            v.status ?? "Pending",
+                            v.status ?? "Pending"
                           )}`}
                         >
                           {v.status ?? "Pending"}
                         </span>
+                      </td>
+
+                      {/* Alert action */}
+                      <td className="whitespace-nowrap px-5 py-3">
+                        <SendAlertButton
+                          violation={v}
+                          onSuccess={(msg) => addToast(msg, "success")}
+                          onError={(msg) => addToast(msg, "error")}
+                        />
                       </td>
                     </tr>
                   ))}
@@ -325,6 +475,9 @@ export default function Dashboard() {
           onClose={() => setLightboxSrc(null)}
         />
       )}
+
+      {/* ── Toast notifications ───────────────────────────── */}
+      <ToastContainer toasts={toasts} dismiss={dismiss} />
     </div>
   );
 }

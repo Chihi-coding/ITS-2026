@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -207,6 +208,7 @@ def main() -> None:
 
     tracked_vehicles: dict[int, dict[str, float | bool]] = {}
     frame_index = 0
+    roi_last_mtime: float = os.path.getmtime(ROI_PATH) if ROI_PATH.exists() else 0.0
 
     # Create a resizable window (scaled to fit screen on first frame)
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -221,6 +223,18 @@ def main() -> None:
 
             frame_index += 1
             current_time = time.time()
+
+            # ── Hot-reload ROI every 30 frames ──────────────────
+            if frame_index % 30 == 0 and ROI_PATH.exists():
+                try:
+                    current_mtime = os.path.getmtime(ROI_PATH)
+                    if current_mtime != roi_last_mtime:
+                        roi_polygon = load_roi_polygon(ROI_PATH)
+                        roi_last_mtime = current_mtime
+                        tracked_vehicles.clear()
+                        print(f"[ROI] Hot-reloaded polygon from {ROI_PATH} (mtime={current_mtime})")
+                except Exception as reload_exc:
+                    logger.warning("ROI hot-reload failed (file may be mid-write): %s", reload_exc)
 
             # Auto-scale window to fit screen on first frame
             if not window_sized:

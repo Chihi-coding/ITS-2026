@@ -10,7 +10,6 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.core.config import DEBUG
 from app.core.supabase_client import get_supabase_client
-from app.services.telegram_bot import send_telegram_alert
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +134,11 @@ async def create_violation(
     image: UploadFile = File(...),
     duration_seconds: float = Form(0),
 ) -> dict[str, Any]:
-    """Receive a violation image, store it in Supabase, save metadata, and alert Telegram."""
+    """Receive a violation image, store it in Supabase, and save metadata.
+
+    Telegram alerts are NOT sent automatically — they are triggered
+    manually from the frontend dashboard.
+    """
     try:
         image_bytes = await image.read()
         if not image_bytes:
@@ -152,18 +155,6 @@ async def create_violation(
             status="Pending",
         )
 
-        try:
-            await send_telegram_alert(
-                plate_number=record["license_plate"],
-                timestamp=_violation_time_from_record(record),
-                image_url=record["evidence_image_path"],
-            )
-            if record.get("id") is not None:
-                _mark_telegram_sent(int(record["id"]))
-                record["telegram_sent"] = True
-        except Exception:
-            logger.exception("Telegram alert failed; violation was still saved")
-
         logger.info(
             "Violation created: id=%s plate=%s",
             record.get("id"),
@@ -171,7 +162,7 @@ async def create_violation(
         )
         return {
             "success": True,
-            "message": "Violation recorded and alert sent",
+            "message": "Violation recorded",
             "data": _normalize_violation(record),
         }
     except HTTPException:

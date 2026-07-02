@@ -1,17 +1,24 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import type { Violation } from "../types/violation";
 
+/** Polling interval in ms — lightweight fallback when Realtime is flaky. */
+const POLL_INTERVAL_MS = 5_000;
+
 /**
- * Hook that fetches violations from Supabase and subscribes to real-time
- * INSERT events so the table updates instantly when the AI module reports
- * a new violation.
+ * Hook that fetches violations from Supabase, subscribes to real-time
+ * INSERT/UPDATE events, **and** runs a lightweight polling fallback so the
+ * table always stays current even when Supabase Realtime is misconfigured
+ * (e.g. replication not enabled on the table, RLS blocking anon reads, etc.).
  */
 export function useViolations() {
   const [violations, setViolations] = useState<Violation[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
+
+  // Track the highest known ID so the polling query is cheap (fetch only new rows)
+  const maxIdRef = useRef<number>(0);
 
   /* ── Initial fetch ──────────────────────────────────────── */
   const fetchViolations = useCallback(async () => {
@@ -23,8 +30,15 @@ export function useViolations() {
         .order("id", { ascending: false });
 
       if (fetchError) throw fetchError;
-      setViolations(data ?? []);
+
+      const rows = data ?? [];
+      setViolations(rows);
       setError(null);
+
+      // Seed the max-id watermark
+      if (rows.length > 0) {
+        maxIdRef.current = rows[0].id;
+      }
     } catch (err: unknown) {
       const msg =
         err instanceof Error
@@ -56,7 +70,18 @@ export function useViolations() {
         },
         (payload) => {
           console.log("[Realtime] New violation:", payload.new);
-          setViolations((prev) => [payload.new as Violation, ...prev]);
+          const incoming = payload.new as Violation;
+
+          setViolations((prev) => {
+            // Deduplicate — the polling fallback may have already added this row
+            if (prev.some((v) => v.id === incoming.id)) return prev;
+            return [incoming, ...prev];
+          });
+
+          // Advance watermark so polling doesn't re-fetch this row
+          if (incoming.id > maxIdRef.current) {
+            maxIdRef.current = incoming.id;
+          }
         },
       )
       .on(
@@ -87,5 +112,54 @@ export function useViolations() {
     };
   }, []);
 
-  return { violations, loading, error, realtimeConnected, refetch: fetchViolations };
+  /* ── Polling fallback ───────────────────────────────────── */
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        // Only fetch rows newer than our watermark — very lightweight query
+        const { data, error: pollError } = await supabase
+          .from("violations")
+          .select("*")
+          .gt("id", maxIdRef.current)
+          .order("id", { ascending: false });
+
+        if (pollError) {
+          console.warn("[useViolations] poll error:", pollError.message);
+          return;
+        }
+
+        if (data && data.length > 0) {
+          console.log(`[useViolations] poll found ${data.length} new row(s)`);
+
+          setViolations((prev) => {
+            // Deduplicate against existing state (Realtime may have delivered some already)
+            const existingIds = new Set(prev.map((v) => v.id));
+            const genuinelyNew = data.filter((v) => !existingIds.has(v.id));
+            if (genuinelyNew.length === 0) return prev;
+
+            console.log(
+              `[useViolations] prepending ${genuinelyNew.length} new violation(s)`,
+            );
+            return [...genuinelyNew, ...prev];
+          });
+
+          // Advance watermark
+          maxIdRef.current = data[0].id;
+        }
+      } catch (err) {
+        console.warn("[useViolations] poll exception:", err);
+      }
+    };
+
+    const id = setInterval(poll, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  return {
+    violations,
+    loading,
+    error,
+    realtimeConnected,
+    refetch: fetchViolations,
+  };
 }
