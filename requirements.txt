@@ -1,0 +1,13 @@
+supabase
+python-dotenv
+fastapi
+uvicorn
+httpx
+python-multipart
+
+# AI module (numpy<2 required for OpenCV/Ultralytics wheel compatibility on Windows)
+numpy>=1.26.4,<2.0.0
+opencv-python>=4.10.0
+ultralytics>=8.0.0
+easyocr>=1.7.0
+requests>=2.31.0

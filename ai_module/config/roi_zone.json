@@ -1,0 +1,11 @@
+{
+  "name": "restricted_parking_zone",
+  "description": "Polygon coordinates for the no-parking ROI (pixel space, top-left origin)",
+  "max_dwell_seconds": 10,
+  "polygon": [
+    [320, 180],
+    [960, 180],
+    [1020, 520],
+    [260, 520]
+  ]
+}

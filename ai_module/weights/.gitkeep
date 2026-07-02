@@ -1,0 +1,2 @@
+# Place YOLOv8 weight files (.pt) in this directory.
+# Default vehicle model: yolov8n.pt (auto-downloaded by ultralytics on first run)
