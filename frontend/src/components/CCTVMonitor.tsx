@@ -100,17 +100,68 @@ export default function CCTVMonitor() {
   /** Native-pixel point → SVG [0,1] fraction */
   const toFrac = (pt: Point): [number, number] => {
     if (naturalSize.w === 0) return [0, 0];
-    return [pt[0] / naturalSize.w, pt[1] / naturalSize.h];
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return [pt[0] / naturalSize.w, pt[1] / naturalSize.h];
+
+    // Compute letterbox offsets
+    const containerAspect = rect.width / rect.height;
+    const imgAspect = naturalSize.w / naturalSize.h;
+    
+    let renderedW = rect.width;
+    let renderedH = rect.height;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (containerAspect > imgAspect) {
+      renderedW = rect.height * imgAspect;
+      offsetX = (rect.width - renderedW) / 2;
+    } else {
+      renderedH = rect.width / imgAspect;
+      offsetY = (rect.height - renderedH) / 2;
+    }
+
+    // pt is in native pixels. Map to rendered pixels.
+    const renderX = (pt[0] / naturalSize.w) * renderedW + offsetX;
+    const renderY = (pt[1] / naturalSize.h) * renderedH + offsetY;
+
+    // Now convert to fraction of the container (since SVG viewBox=0 0 1 1 covers full container)
+    return [renderX / rect.width, renderY / rect.height];
   };
 
   /** SVG click → native-pixel point */
   const clickToNative = (e: React.MouseEvent<SVGSVGElement>): Point => {
     const rect = containerRef.current!.getBoundingClientRect();
-    const fx = (e.clientX - rect.left) / rect.width;
-    const fy = (e.clientY - rect.top) / rect.height;
+    const naturalW = naturalSize.w || 1280;
+    const naturalH = naturalSize.h || 720;
+
+    const containerAspect = rect.width / rect.height;
+    const imgAspect = naturalW / naturalH;
+
+    let renderedW = rect.width;
+    let renderedH = rect.height;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (containerAspect > imgAspect) {
+      renderedW = rect.height * imgAspect;
+      offsetX = (rect.width - renderedW) / 2;
+    } else {
+      renderedH = rect.width / imgAspect;
+      offsetY = (rect.height - renderedH) / 2;
+    }
+
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    const imgX = clickX - offsetX;
+    const imgY = clickY - offsetY;
+
+    const normX = Math.max(0, Math.min(1, imgX / renderedW));
+    const normY = Math.max(0, Math.min(1, imgY / renderedH));
+
     return [
-      Math.round(fx * (naturalSize.w || 1)),
-      Math.round(fy * (naturalSize.h || 1)),
+      Math.round(normX * naturalW),
+      Math.round(normY * naturalH),
     ];
   };
 

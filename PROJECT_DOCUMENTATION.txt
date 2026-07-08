@@ -1,0 +1,117 @@
+TÀI LIỆU DỰ ÁN: HỆ THỐNG PHÁT HIỆN ĐỖ XE TRÁI PHÉP
+
+1. THÔNG TIN TỔNG QUAN DỰ ÁN
+- Tên đồ án: Hệ thống phát hiện đỗ xe trái phép (Smart Parking System - ITS-2026).
+- Mục tiêu chính của hệ thống: Tự động giám sát, phát hiện và cảnh báo các phương tiện đỗ xe không đúng nơi quy định hoặc dừng đỗ quá thời gian cho phép trong vùng cấm.
+- Mô tả ngắn: Hệ thống sử dụng nguồn video/camera để nhận diện các phương tiện giao thông. Nó theo dõi phương tiện khi đi vào vùng giám sát (ROI) được vẽ trước. Nếu thời gian phương tiện dừng/đỗ vượt quá giới hạn quy định, hệ thống sẽ trích xuất biển số, chụp ảnh minh chứng và gửi thông tin về máy chủ, đồng thời gửi thông báo đến người quản trị.
+- Luồng hoạt động tổng quát: Camera/Video -> AI Module phát hiện & theo dõi xe -> Phát hiện vi phạm (quá thời gian trong ROI) -> Nhận diện biển số (OCR) -> Gửi API lên Backend -> Lưu dữ liệu/Ảnh vào Supabase -> Cảnh báo Realtime lên Frontend & Telegram.
+
+2. KIẾN TRÚC HỆ THỐNG
+Hệ thống được chia thành các phần độc lập, liên kết với nhau qua API:
+- AI / Computer Vision: Module xử lý video, nhận diện xe bằng YOLOv8, theo dõi quỹ đạo (tracking) và nhận dạng chữ trên biển số (OCR).
+- Frontend: Dashboard quản trị trên web xây dựng bằng React (Vite).
+- Backend: RESTful API xây dựng bằng FastAPI (Python) làm cầu nối xử lý logic lưu trữ và cảnh báo.
+- Database & Storage: Sử dụng Supabase (nền tảng dựa trên PostgreSQL) để lưu thông tin vi phạm và lưu trữ ảnh minh chứng.
+- API giao tiếp: FastAPI cung cấp các HTTP REST API (như `/api/violations`) để AI Module gửi data lên và Frontend tương tác.
+- Module vẽ vùng vi phạm: Tích hợp bằng một tool giao diện OpenCV chạy độc lập (`setup_roi.py`).
+- Module phát hiện và lưu cảnh báo: AI Module xử lý logic vi phạm theo thời gian, gửi dữ liệu lên Backend; Backend xử lý ghi vào DB và gửi Telegram alert.
+
+3. AI MODEL / COMPUTER VISION
+- Model AI đang dùng: YOLOv8 (phiên bản Nano).
+- File model: `yolov8n.pt`.
+- Model phát hiện các đối tượng (Class): Xe ô tô (car: 2), xe máy (motorcycle: 3), xe buýt (bus: 5), xe tải (truck: 7).
+- Thư viện xử lý: Ultralytics (cho YOLOv8), OpenCV (`cv2`) cho xử lý khung hình/giao diện vẽ roi, NumPy, EasyOCR cho đọc biển số.
+- Xử lý từng frame: Dùng `cv2.VideoCapture` đọc liên tục từng frame, resize window theo tỷ lệ hiển thị, xử lý qua YOLO với mode `.track()`.
+- Phát hiện phương tiện nằm trong vùng vi phạm: Hệ thống xác định tọa độ hộp bao (bounding box), lấy "điểm giữa cạnh dưới" (bottom_center_point) của bounding box. Sau đó dùng hàm `cv2.pointPolygonTest` để kiểm tra điểm đó có nằm bên trong đa giác ROI hay không (hàm `is_inside_roi`).
+- Xác định đỗ xe trái phép: Lưu vết thời điểm (timestamp) xe đi vào vùng cấm (ROI). Mỗi frame kiểm tra, nếu thời gian lưu trú (current_time - first_seen) > `MAX_DWELL_SECONDS` (mặc định cấu hình cứng là 5 giây trong source) mà xe vẫn nằm trong vùng cấm thì tính là vi phạm.
+- Tracking: Sử dụng bộ tracker tích hợp sẵn của Ultralytics YOLOv8 khi truyền `persist=True` vào hàm `model.track`.
+- File cấu hình thời gian vi phạm: Sử dụng hằng số `MAX_DWELL_SECONDS` được set trong file `ai_module/main.py`.
+
+4. FRONTEND
+- Công nghệ: React (React 19), Vite, TypeScript. Style bằng TailwindCSS.
+- Thư viện giao diện: Sử dụng Lucide-React cho icon, `@supabase/supabase-js` để giao tiếp DB realtime.
+- Màn hình chính: Dashboard, CCTV Monitor (hiển thị danh sách cảnh báo vi phạm - theo dõi file `CCTVMonitor.tsx`, `Dashboard.tsx`).
+- Cách hiển thị: Dữ liệu (ảnh, trạng thái vi phạm) được lấy realtime từ Supabase thông qua tính năng Realtime Subscription của Supabase, không cần qua websocket tự build. Thông báo hiện trực tiếp ngay khi AI báo cáo xong.
+- Các component chính: Nằm trong thư mục `frontend/src/components/` như `Dashboard.tsx`, `CCTVMonitor.tsx`.
+
+5. BACKEND
+- Công nghệ: FastAPI (chạy thông qua máy chủ `uvicorn`).
+- API chính: `/api/violations`, `/api/camera`, `/api/alerts`.
+- API xử lý AI: `/api/violations` nhận thông tin (plate_number, duration, hình ảnh) dạng form-data từ AI Module POST lên.
+- File chính của backend: `backend/app/main.py` định tuyến router và `backend/app/core/` (hoặc module tương đương) để xử lý kết nối Supabase.
+
+6. DATABASE
+- Hệ quản trị CSDL: Supabase (Dựa trên PostgreSQL).
+- Lưu trữ dữ liệu gì:
+  * ID vi phạm, Camera ID, Zone ID.
+  * Thông tin biển số (`license_plate`).
+  * Thời gian phát hiện (`detected_at`).
+  * Thời gian vi phạm/đỗ (`duration_seconds`).
+  * Đường dẫn ảnh minh chứng (`evidence_image_path`).
+  * Trạng thái xử lý (`status` - mặc định là 'Pending').
+  * Cờ báo Telegram (`telegram_sent`).
+- Schema/Bảng (Table): Bảng `violations` nằm ở schema public.
+- Storage/Bucket: Sử dụng Supabase Storage bucket tên `violation-images` để lưu trữ ảnh chụp vi phạm dạng file.
+- File config/migration: `backend/setup_supabase.sql` là file script SQL để tạo bảng và bucket lưu trữ trên Supabase.
+
+7. CHỨC NĂNG VẼ VÙNG VI PHẠM (ROI)
+- Cách thực hiện: Người dùng chạy module `ai_module.setup_roi` (`setup_roi.py`) độc lập ở Terminal.
+- Giao diện vẽ: Tool mở lên frame đầu tiên của video bằng OpenCV, người dùng click chuột trái để tạo tối đa 4 điểm góc cho vùng cấm (polygon), bấm 'c' để xác nhận lưu.
+- Lưu trữ dưới dạng: Mảng toạ độ dạng list of list JSON (ví dụ `[[x1,y1], [x2,y2], ...]`).
+- Nơi lưu vùng vi phạm: Lưu vào file text cấu hình JSON ở máy tính chạy AI (`ai_module/config/roi.json`).
+- Logic kiểm tra giao nhau: AI lấy điểm trung tâm ở mép dưới của bounding box xe, kiểm tra xem tọa độ đó có nằm trong đa giác tạo bởi ROI hay không bằng hàm toán học OpenCV `cv2.pointPolygonTest`. Nếu trả về giá trị >= 0 tức là nằm trong.
+- File xử lý: `ai_module/setup_roi.py` (công cụ vẽ) và `ai_module/main.py` (công cụ check).
+
+8. LUỒNG PHÁT HIỆN ĐỖ XE TRÁI PHÉP
+- Bước 1: OpenCV mở Video/Camera (`cv2.VideoCapture`) và đưa từng frame hình ảnh vào hệ thống.
+- Bước 2: AI Module (YOLOv8) đọc khung hình và nhận diện bounding box.
+- Bước 3: YOLOv8 Tracker gán cho mỗi phương tiện một `track_id` để theo dõi liên tục.
+- Bước 4: Lấy điểm tâm đáy (bottom center) của bounding box.
+- Bước 5: So khớp điểm tâm đáy với đa giác ROI (roi.json) để xác định xe đã vào vùng cấm chưa.
+- Bước 6: Khi vào vùng cấm, đánh dấu thời gian bắt đầu (first_seen). Nếu xe ở trong đó vượt quá `MAX_DWELL_SECONDS` (vd: 5s), trigger cảnh báo vi phạm.
+- Bước 7: Hệ thống crop (cắt) khung hình chứa xe đó, gửi qua EasyOCR đọc biển số, rồi gửi POST HTTP cùng ảnh + biển số về Backend.
+- Bước 8: Backend chèn bản ghi vào bảng `violations` trên Supabase Database và upload ảnh lên Storage bucket, gửi Telegram.
+- Bước 9: Frontend nhận tín hiệu cập nhật qua Supabase Realtime và hiển thị cảnh báo lên màn hình cho quản trị viên.
+
+9. CÁC THAO TÁC NGƯỜI DÙNG
+- Vẽ và thiết lập vùng vi phạm bằng script python `setup_roi.py`.
+- Mở Frontend web (React dashboard) để giám sát.
+- Chạy hệ thống bằng CLI thông qua `ai_module.main` (truyền tham số video hoặc số thứ tự camera `--source 0`).
+- Xem danh sách cảnh báo vi phạm tự động update realtime trên màn hình Dashboard, xem ảnh minh chứng, thời gian vi phạm, biển số.
+- (Chưa xác định trong source code: Quản lý đăng nhập chi tiết ở front-end (có vẻ dùng Anon Key mặc định), chức năng thao tác xoá vùng vi phạm qua UI (hiện chỉ hỗ trợ cấu hình qua file json/CLI)).
+
+10. CẤU TRÚC THƯ MỤC DỰ ÁN
+- `ai_module/`: Chứa mã nguồn AI (YOLO tracking, check ROI, script tạo vùng cấm setup_roi.py, xử lý OCR).
+- `backend/`: Chứa mã nguồn API của FastAPI (app/), Dockerfile và script SQL (setup_supabase.sql).
+- `frontend/`: Chứa mã nguồn giao diện web viết bằng React (Vite), chứa package.json, config tailwind, components,...
+- `README.md`: Tài liệu hướng dẫn cài đặt sơ bộ của hệ thống.
+- `requirements.txt`: Các thư viện phụ thuộc của Python cho Backend và AI.
+
+11. CÁCH CÀI ĐẶT VÀ CHẠY DỰ ÁN
+- Cấu hình database: Chạy các lệnh SQL trong file `backend/setup_supabase.sql` trên SQL Editor của dự án Supabase để tạo bảng và bucket lưu trữ.
+- Cài đặt thư viện Python (AI + Backend):
+  * Cài Python 3.11+. Tạo virtual env: `python -m venv .venv` -> Kích hoạt env.
+  * Cài đặt: `pip install -r requirements.txt`.
+- Cấu hình Backend: Copy `.env.example` trong backend thành `.env`, điền cấu hình `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_KEY`.
+- Cài đặt thư viện Frontend:
+  * Vào thư mục frontend, chạy `npm install`.
+  * Copy `frontend/.env.example` thành `frontend/.env`, cấu hình biến `VITE_SUPABASE_URL` và `VITE_SUPABASE_ANON_KEY`.
+- Chạy hệ thống (cần mở 3 terminal riêng):
+  * Terminal 1 (Backend): `cd backend`, chạy `uvicorn app.main:app --reload --port 8000`.
+  * Terminal 2 (Frontend): `cd frontend`, chạy `npm run dev` (sẽ chạy ở port mặc định 5173).
+  * Terminal 3 (AI Module): chạy `python -m ai_module.main --source 0` (số 0 cho webcam, hoặc trỏ file video).
+
+12. CÁC THƯ VIỆN / FRAMEWORK ĐANG SỬ DỤNG
+- AI / Computer Vision: Ultralytics (YOLOv8), OpenCV (`opencv-python`), NumPy, EasyOCR.
+- Backend: FastAPI, Uvicorn, httpx, requests, pydantic, sqlalchemy, supabase-py.
+- Frontend: React (v19), Vite, TailwindCSS (v4), lucide-react, @supabase/supabase-js, TypeScript.
+- Database: Supabase (PostgreSQL), Supabase Storage.
+- Realtime: Được xử lý ngầm (buit-in) thông qua tính năng Realtime của hệ sinh thái Supabase (PostgreSQL triggers).
+
+13. ĐÁNH GIÁ ƯU ĐIỂM VÀ HẠN CHẾ
+- Ưu điểm: Hệ thống triển khai tách biệt (Microservices architecture), việc dùng FastAPI và Supabase giúp hệ thống có Realtime mà không cần tự build WebSocket phức tạp, YOLOv8 tracking kết hợp OpenCV ROI đơn giản, dễ hiệu chỉnh thông số, nhẹ, tốc độ cao.
+- Hạn chế hiện tại: EasyOCR độ chính xác đọc biển số chưa thực sự xuất sắc (đã phải code sẵn dùng biển số giả Mock Plate nếu không nhận ra); chưa hỗ trợ vẽ và điều chỉnh vùng vi phạm (ROI) trực tiếp bằng kéo thả trên Frontend Web (hiện dùng tool python ngoài).
+- Hướng phát triển thêm: Tích hợp thư viện ALPR/LPR chuyên dụng cho biển số thay cho EasyOCR chung chung; Thêm giao diện vẽ ROI polygon động trực tiếp từ Frontend; Thống kê và xuất báo cáo CSV/PDF; Lưu trữ video vi phạm thay vì chỉ ảnh.
+
+14. KẾT LUẬN
+Hệ thống phát hiện đỗ xe trái phép (ITS-2026) đóng vai trò thiết thực như một giải pháp giao thông thông minh giúp thay thế con người giám sát liên tục 24/7. Việc kết hợp Computer Vision tiên tiến (YOLOv8) với công nghệ Web Realtime cung cấp một dashboard quản lý cảnh báo tức thời, giúp nâng cao ý thức đỗ xe và hỗ trợ đắc lực cho công tác phạt nguội và điều tiết giao thông trong đô thị.

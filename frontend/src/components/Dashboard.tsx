@@ -442,13 +442,21 @@ export default function Dashboard() {
 
                       {/* Status */}
                       <td className="whitespace-nowrap px-5 py-3">
-                        <span
-                          className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${statusBadge(
-                            v.status ?? "Pending"
-                          )}`}
-                        >
-                          {v.status ?? "Pending"}
-                        </span>
+                        {v.status === "UNSUPPORTED FORMAT" || v.status === "FOREIGN PLATE" || v.status === "OCR FAILED" ? (
+                            <div className="flex flex-col gap-1">
+                              <span className="inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset bg-rose-500/15 text-rose-400 ring-rose-500/30">
+                                {v.status}
+                              </span>
+                            </div>
+                        ) : (
+                            <span
+                              className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${statusBadge(
+                                v.status ?? "Pending"
+                              )}`}
+                            >
+                              {v.status ?? "Pending"}
+                            </span>
+                        )}
                       </td>
 
                       {/* Alert action */}
